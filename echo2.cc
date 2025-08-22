@@ -1,18 +1,18 @@
 #include "echo2.h"
 
-#include "envoy/buffer/buffer.h"
-#include "envoy/network/connection.h"
-
-#include "source/common/common/assert.h"
-
 namespace Envoy {
-namespace Filter {
+namespace Extensions {
+namespace NetworkFilters {
+namespace Echo2 {
 
-Network::FilterStatus Echo2::onData(Buffer::Instance& data, bool) {
-  ENVOY_CONN_LOG(trace, "echo: got {} bytes", read_callbacks_->connection(), data.length());
+Network::FilterStatus Echo2Filter::onData(Buffer::Instance& data, bool) {
+  // Echo back whatever was received
   read_callbacks_->connection().write(data, false);
-  return Network::FilterStatus::StopIteration;
+  return Network::FilterStatus::Continue;
 }
 
-} // namespace Filter
+} // namespace Echo2
+} // namespace NetworkFilters
+} // namespace Extensions
 } // namespace Envoy
+

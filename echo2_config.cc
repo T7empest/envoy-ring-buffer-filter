@@ -1,40 +1,35 @@
-#include <string>
-
 #include "echo2.h"
 
-#include "envoy/registry/registry.h"
 #include "envoy/server/filter_config.h"
+#include "source/common/protobuf/protobuf.h"
 
 namespace Envoy {
-namespace Server {
-namespace Configuration {
+namespace Extensions {
+namespace NetworkFilters {
+namespace Echo2 {
 
-/**
- * Config registration for the echo2 filter. @see NamedNetworkFilterConfigFactory.
- */
-class Echo2ConfigFactory : public NamedNetworkFilterConfigFactory {
+class Echo2ConfigFactory : public Server::Configuration::NamedNetworkFilterConfigFactory {
 public:
-  Network::FilterFactoryCb createFilterFactoryFromProto(const Protobuf::Message&,
-                                                        FactoryContext&) override {
-    return [](Network::FilterManager& filter_manager) -> void {
-      filter_manager.addReadFilter(Network::ReadFilterSharedPtr{new Filter::Echo2()});
+  absl::StatusOr<Network::FilterFactoryCb>
+  createFilterFactoryFromProto(const Protobuf::Message&,
+                               Server::Configuration::FactoryContext&) override {
+    return [](Network::FilterManager& filter_manager) {
+      filter_manager.addReadFilter(std::make_shared<Echo2Filter>());
     };
   }
 
   ProtobufTypes::MessagePtr createEmptyConfigProto() override {
-    return ProtobufTypes::MessagePtr{new Envoy::ProtobufWkt::Struct()};
+    return std::make_unique<ProtobufWkt::Struct>();
   }
 
-  std::string name() const override { return "echo2"; }
-
-  bool isTerminalFilterByProto(const Protobuf::Message&, ServerFactoryContext&) override { return true; }
+  std::string name() const override { return "envoy.filters.network.echo2"; }
 };
 
-/**
- * Static registration for the echo2 filter. @see RegisterFactory.
- */
-static Registry::RegisterFactory<Echo2ConfigFactory, NamedNetworkFilterConfigFactory> registered_;
+REGISTER_FACTORY(Echo2ConfigFactory,
+                 Server::Configuration::NamedNetworkFilterConfigFactory);
 
-} // namespace Configuration
-} // namespace Server
+} // namespace Echo2
+} // namespace NetworkFilters
+} // namespace Extensions
 } // namespace Envoy
+
