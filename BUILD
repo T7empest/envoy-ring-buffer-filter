@@ -71,7 +71,9 @@ envoy_cc_test(
     repository = "@envoy",
     deps = [
         ":ring_cache_config",
-        "@envoy//test/integration:integration_lib",
+        "@envoy//test/integration:http_integration_lib",
+        "@envoy//test/test_common:registry_lib",
+        "@envoy//test/test_common:utility_lib",
     ],
 )
 
