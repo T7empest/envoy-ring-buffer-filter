@@ -1,5 +1,7 @@
 #include "ring_cache.h"
 
+#include "source/common/http/header_map_impl.h"
+
 namespace Envoy {
   namespace Extensions {
     namespace HttpFilters {
@@ -35,8 +37,8 @@ namespace Envoy {
               { headers.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_hit"); };
 
             dec_cb_->sendLocalReply(
-              Http::Code::OK,
-              absl::string_view{entry.body},
+              entry->status,
+              absl::string_view{entry->body},
               add_hitStatus_,
               absl::nullopt,
               "cache_hit");
@@ -75,24 +77,52 @@ namespace Envoy {
                    headers.getStatusValue(), end_stream);
 #endif
 
-          // for now dont cache nonEndStream requests
-          (void)end_stream;
+          if (!should_cache_)
+            return Http::FilterHeadersStatus::Continue;
+
+          // cache the response:
+          // headers
+          pending_entry_ = std::make_unique<CachedResponse>();
+          pending_entry_->headers = Http::ResponseHeaderMapImpl::create();
+          Http::ResponseHeaderMapImpl::copyFrom(*pending_entry_->headers, headers);
+
+          // status code
+          uint32_t codeNum = 200;
+          if (!absl::SimpleAtoi(headers.getStatusValue(), &codeNum))
+            codeNum = 200; // fallback
+          pending_entry_->status = static_cast<Http::Code>(codeNum);
+
+          if (end_stream)
+          {
+            ENVOY_LOG(debug, "endstream, serving header only response");
+            sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
+            pending_entry_.reset();
+          }
 
           headers.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_miss");
           return Http::FilterHeadersStatus::Continue;
         }
 
-        Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance&, bool end_stream)
+        Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, bool end_stream)
         {
-          // TODO: append to ring buffer, fanout to coalesced waiters
+          if (!should_cache_ || !pending_entry_)
+            return Http::FilterDataStatus::Continue;
 
-          (void)end_stream;
+          // add body to the cached response
+          pending_entry_->body = data.toString();
+
+          ENVOY_LOG(debug, "pending entries body: {}", pending_entry_->body);
+          ENVOY_LOG(debug, "endstream: {}", end_stream);
+
+          // put in cache
+          sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
+          pending_entry_.reset();
+
           return Http::FilterDataStatus::Continue;
         }
 
         Http::FilterTrailersStatus RingCacheFilter::encodeTrailers(Http::ResponseTrailerMap&)
         {
-          // TODO: finalize entry, set freshness, notify waiters
           return Http::FilterTrailersStatus::Continue;
         }
 
@@ -103,7 +133,7 @@ namespace Envoy {
 
         void RingCacheFilter::onDestroy()
         {
-          // TODO: cleanup/reset if leader aborted; wake waiters with error if needed
+          // TODO:
         }
 
         Http::Filter1xxHeadersStatus RingCacheFilter::encode1xxHeaders(Http::ResponseHeaderMap&)
