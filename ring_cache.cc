@@ -1,5 +1,7 @@
 #include "ring_cache.h"
 
+#include "source/common/http/header_map_impl.h"
+
 namespace Envoy {
   namespace Extensions {
     namespace HttpFilters {
@@ -36,7 +38,7 @@ namespace Envoy {
 
             dec_cb_->sendLocalReply(
               Http::Code::OK,
-              absl::string_view{entry.body},
+              absl::string_view{entry->body},
               add_hitStatus_,
               absl::nullopt,
               "cache_hit");
@@ -75,18 +77,38 @@ namespace Envoy {
                    headers.getStatusValue(), end_stream);
 #endif
 
-          // for now dont cache nonEndStream requests
-          (void)end_stream;
+          if (!should_cache_)
+            return Http::FilterHeadersStatus::Continue;
+
+          // cache the response
+          pending_entry_ = std::make_unique<CachedResponse>();
+          pending_entry_->headers = Http::ResponseHeaderMapImpl::create();
+          Http::ResponseHeaderMapImpl::copyFrom(*pending_entry_->headers, headers);
+
+          if (end_stream)
+          {
+            sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
+            pending_entry_.reset();
+          }
 
           headers.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_miss");
           return Http::FilterHeadersStatus::Continue;
         }
 
-        Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance&, bool end_stream)
+        Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, bool end_stream)
         {
-          // TODO: append to ring buffer, fanout to coalesced waiters
+          if (!should_cache_ || !pending_entry_)
+            return Http::FilterDataStatus::Continue;
 
-          (void)end_stream;
+          // add body to the cached response
+          pending_entry_->body = data.toString();
+
+          if (end_stream)
+          {
+            sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
+            pending_entry_.reset();
+          }
+
           return Http::FilterDataStatus::Continue;
         }
 
@@ -103,7 +125,7 @@ namespace Envoy {
 
         void RingCacheFilter::onDestroy()
         {
-          // TODO: cleanup/reset if leader aborted; wake waiters with error if needed
+          // TODO:
         }
 
         Http::Filter1xxHeadersStatus RingCacheFilter::encode1xxHeaders(Http::ResponseHeaderMap&)

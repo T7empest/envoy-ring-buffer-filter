@@ -37,7 +37,7 @@ namespace Envoy {
         struct RingBufferCache
         {
           // TODO: make actual ring buffer, ?move to new file?
-          std::map<CacheKey, CachedResponse> cache;
+          std::map<CacheKey, std::unique_ptr<CachedResponse>> cache;
         };
 
         // Minimal pass-through HTTP filter skeleton.
@@ -72,6 +72,7 @@ namespace Envoy {
           std::shared_ptr<RingBufferCache> sharedCache_;
           CacheKey cache_key_;
           bool should_cache_ = false;
+          std::unique_ptr<CachedResponse> pending_entry_;
 
           Http::StreamDecoderFilterCallbacks* dec_cb_{nullptr};
           Http::StreamEncoderFilterCallbacks* enc_cb_{nullptr};
