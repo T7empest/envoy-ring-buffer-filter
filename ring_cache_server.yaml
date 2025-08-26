@@ -22,6 +22,20 @@ static_resources:
                   - name: envoy.filters.http.ring_cache
                     typed_config:
                       "@type": type.googleapis.com/google.protobuf.Struct
+                      value:
+                        pools:
+                          - name: api_queries
+                            slots: 512
+                            match:
+                              path_prefixes: ["/api/"]
+                          - name: static_pages
+                            slots: 1024
+                            match:
+                              path_prefixes: ["/static/"]
+                          - name: error_pages
+                            slots: 32
+                            match:
+                              path_prefixes: ["/error/"]
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router

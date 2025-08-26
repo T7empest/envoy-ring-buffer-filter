@@ -3,150 +3,156 @@
 #include "source/common/http/header_map_impl.h"
 
 namespace Envoy {
-  namespace Extensions {
-    namespace HttpFilters {
-      namespace RingCache {
+namespace Extensions {
+namespace HttpFilters {
+namespace RingCache {
 
-        // Decoder
-        Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream)
-        {
-#ifndef NDEBUG
-          ENVOY_LOG(debug,"decodeHeaders on request: [method={}, path={}, end_stream={}]",
-                    headers.getMethodValue(), headers.getPathValue(), end_stream);
-#endif
+  // Decoder
+  Http::FilterHeadersStatus RingCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream)
+  {
+    ENVOY_LOG(debug,"decodeHeaders on request: [method={}, path={}, end_stream={}]",
+              headers.getMethodValue(), headers.getPathValue(), end_stream);
 
-          // reject caching for streamed requests
-          if (!end_stream)
-            return Http::FilterHeadersStatus::Continue;
+    // reject caching of non-GET requests
+    if (headers.getMethodValue() != "GET")
+      return Http::FilterHeadersStatus::Continue;
 
-          // reject caching of non-GET requests
-          if (headers.getMethodValue() != "GET")
-            return Http::FilterHeadersStatus::Continue;
+    // reject caching for streamed requests
+    if (!end_stream)
+      return Http::FilterHeadersStatus::Continue;
 
-          cache_key_ = {
-            .host = std::string(headers.getHostValue()),
-            .path = std::string(headers.getPathValue())
-          };
+    const absl::string_view path = headers.getPathValue();
+    selected_pool_ = pickPool(path);
+    if (selected_pool_ == nullptr)
+    {
+      ENVOY_LOG(debug, "could not pick a pool, given path: {}", path);
+      return Http::FilterHeadersStatus::Continue;
+    }
 
-          // if cache hit -> shortcircuit and server client directly from cache
-          auto it = sharedCache_->cache.find(cache_key_);
-          if (it != sharedCache_->cache.end())
-          {
-            const auto& entry = it->second;
-            std::function<void(Http::ResponseHeaderMap&)> add_hitStatus_ = [](Http::ResponseHeaderMap& headers)
-              { headers.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_hit"); };
+    pending_key_ = {
+      .host = std::string(headers.getHostValue()),
+      .path = std::string(headers.getPathValue())
+    };
 
-            dec_cb_->sendLocalReply(
-              entry->status,
-              absl::string_view{entry->body},
-              add_hitStatus_,
-              absl::nullopt,
-              "cache_hit");
+    // if cache hit -> shortcircuit and serve client directly from cache
+    if (const CachedResponse* hit = selected_pool_->buffer.find(pending_key_))
+    {
+      ENVOY_LOG(debug, "HIT pool: {}, path: {}", selected_pool_->name, pending_key_.path);
+      ENVOY_LOG(debug, "SERVING FROM CACHE, body={}", hit->body);
 
-            // TODO: extend TTL of cached response
+      const auto code = hit->status;
+      const std::string& body = hit->body;
 
-            return Http::FilterHeadersStatus::StopIteration;
-          }
+      dec_cb_->sendLocalReply(
+        code,
+        body,
+        [](Http::ResponseHeaderMap& h) { h.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_hit"); },
+        absl::nullopt,
+        "cache_hit");
 
-          // cache miss, pass through to upstream
-          should_cache_ = true;
-          return Http::FilterHeadersStatus::Continue;
-        }
+      return Http::FilterHeadersStatus::StopIteration;
+    }
 
-        Http::FilterDataStatus RingCacheFilter::decodeData(Buffer::Instance&, bool)
-        {
-          return Http::FilterDataStatus::Continue;
-        }
+    ENVOY_LOG(debug, "MISS pool: {}, path: {}", selected_pool_->name, pending_key_.path);
+    should_cache_ = true;
+    return Http::FilterHeadersStatus::Continue;
+  }
 
-        Http::FilterTrailersStatus RingCacheFilter::decodeTrailers(Http::RequestTrailerMap&)
-        {
-          return Http::FilterTrailersStatus::Continue;
-        }
+  Http::FilterDataStatus RingCacheFilter::decodeData(Buffer::Instance&, bool)
+  {
+    return Http::FilterDataStatus::Continue;
+  }
 
-        void RingCacheFilter::setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& cb)
-        {
-          dec_cb_ = &cb;
-        }
+  Http::FilterTrailersStatus RingCacheFilter::decodeTrailers(Http::RequestTrailerMap&)
+  {
+    return Http::FilterTrailersStatus::Continue;
+  }
+
+  void RingCacheFilter::setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& cb)
+  {
+    dec_cb_ = &cb;
+  }
 
 
-        // Encoder
-        Http::FilterHeadersStatus RingCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream)
-        {
-#ifndef NDEBUG
-          ENVOY_LOG(debug,"encodeHeaders on request: [status={}, end_stream={}]",
-                   headers.getStatusValue(), end_stream);
-#endif
+  // Encoder
+  Http::FilterHeadersStatus RingCacheFilter::encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream)
+  {
+    ENVOY_LOG(debug,"encodeHeaders on request: [status={}, end_stream={}]",
+             headers.getStatusValue(), end_stream);
 
-          if (!should_cache_)
-            return Http::FilterHeadersStatus::Continue;
+    if (!should_cache_ || selected_pool_ == nullptr)
+      return Http::FilterHeadersStatus::Continue;
 
-          // cache the response:
-          // headers
-          pending_entry_ = std::make_unique<CachedResponse>();
-          pending_entry_->headers = Http::ResponseHeaderMapImpl::create();
-          Http::ResponseHeaderMapImpl::copyFrom(*pending_entry_->headers, headers);
+    pending_entry_ = std::make_unique<CachedResponse>();
 
-          // status code
-          uint32_t codeNum = 200;
-          if (!absl::SimpleAtoi(headers.getStatusValue(), &codeNum))
-            codeNum = 200; // fallback
-          pending_entry_->status = static_cast<Http::Code>(codeNum);
+    pending_entry_->status = static_cast<Http::Code>(Http::Utility::getResponseStatus(headers));
 
-          if (end_stream)
-          {
-            ENVOY_LOG(debug, "endstream, serving header only response");
-            sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
-            pending_entry_.reset();
-          }
+    auto hdrs = Http::ResponseHeaderMapImpl::create();
+    Http::HeaderMapImpl::copyFrom(*hdrs, headers);
+    pending_entry_->headers = std::move(hdrs);
 
-          headers.addCopy(Http::LowerCaseString("cache-hit-status"), "cache_miss");
-          return Http::FilterHeadersStatus::Continue;
-        }
 
-        Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, bool end_stream)
-        {
-          if (!should_cache_ || !pending_entry_)
-            return Http::FilterDataStatus::Continue;
+    if (end_stream) // header only response
+    {
+      ENVOY_LOG(debug, "header only response, caching from encodeHeaders()");
+      selected_pool_->buffer.put(std::move(pending_key_), std::move(*pending_entry_));
+      should_cache_ = false;
+    }
 
-          // add body to the cached response
-          pending_entry_->body = data.toString();
+    return Http::FilterHeadersStatus::Continue;
+  }
 
-          ENVOY_LOG(debug, "pending entries body: {}", pending_entry_->body);
-          ENVOY_LOG(debug, "endstream: {}", end_stream);
+  Http::FilterDataStatus RingCacheFilter::encodeData(Buffer::Instance& data, bool end_stream)
+  {
+    if (!should_cache_)
+      return Http::FilterDataStatus::Continue;
 
-          // put in cache
-          sharedCache_->cache.emplace(cache_key_, std::move(pending_entry_));
-          pending_entry_.reset();
+    pending_entry_->body.append(data.toString());
 
-          return Http::FilterDataStatus::Continue;
-        }
+    if (end_stream)
+    {
+      selected_pool_->buffer.put(std::move(pending_key_), std::move(*pending_entry_));
+      should_cache_ = false;
+    }
 
-        Http::FilterTrailersStatus RingCacheFilter::encodeTrailers(Http::ResponseTrailerMap&)
-        {
-          return Http::FilterTrailersStatus::Continue;
-        }
+    return Http::FilterDataStatus::Continue;
+  }
 
-        void RingCacheFilter::setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& cb)
-        {
-          enc_cb_ = &cb;
-        }
+  Http::FilterTrailersStatus RingCacheFilter::encodeTrailers(Http::ResponseTrailerMap& trailers)
+  {
+    if (!should_cache_)
+      return Http::FilterTrailersStatus::Continue;
 
-        void RingCacheFilter::onDestroy()
-        {
-          // TODO:
-        }
+    auto trls = Http::ResponseTrailerMapImpl::create();
+    Http::ResponseTrailerMapImpl::copyFrom(*trls, trailers);
+    pending_entry_->trailers = std::move(trls);
+    selected_pool_->buffer.put(std::move(pending_key_), std::move(*pending_entry_));
+    should_cache_ = false;
 
-        Http::Filter1xxHeadersStatus RingCacheFilter::encode1xxHeaders(Http::ResponseHeaderMap&)
-        {
-          return Http::Filter1xxHeadersStatus::Continue;
-        }
+    return Http::FilterTrailersStatus::Continue;
+  }
 
-        Http::FilterMetadataStatus RingCacheFilter::encodeMetadata(Http::MetadataMap&)
-        {
-          return Http::FilterMetadataStatus::Continue;
-        }
+  void RingCacheFilter::setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& cb)
+  {
+    enc_cb_ = &cb;
+  }
 
-      } // namespace RingCache
-    } // namespace HttpFilters
-  } // namespace Extensions
+  void RingCacheFilter::onDestroy()
+  {
+    // TODO:
+  }
+
+  Http::Filter1xxHeadersStatus RingCacheFilter::encode1xxHeaders(Http::ResponseHeaderMap&)
+  {
+    return Http::Filter1xxHeadersStatus::Continue;
+  }
+
+  Http::FilterMetadataStatus RingCacheFilter::encodeMetadata(Http::MetadataMap&)
+  {
+    return Http::FilterMetadataStatus::Continue;
+  }
+
+} // namespace RingCache
+} // namespace HttpFilters
+} // namespace Extensions
 } // namespace Envoy

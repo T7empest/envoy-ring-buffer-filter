@@ -9,7 +9,6 @@ namespace Envoy {
 			: HttpIntegrationTest(Http::CodecType::HTTP1, GetParam()) {}
 
 		void SetUp() override {
-			// Load bootstrap from your YAML instead of messing with config_helper
 			autonomous_upstream_ = true;  // fake backend
 			initialize();
 		}

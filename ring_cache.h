@@ -2,84 +2,66 @@
 
 #include <utility>
 
+#include "ring_buffer.h"
 #include "envoy/http/filter.h"
 #include "source/common/common/logger.h"
 
 namespace Envoy {
-  namespace Extensions {
-    namespace HttpFilters {
-      namespace RingCache {
+namespace Extensions {
+namespace HttpFilters {
+namespace RingCache {
 
-        struct CacheKey
-        {
-          std::string host;
-          std::string path;
+  // Minimal pass-through HTTP filter skeleton.
+  // TODO: cache/coalescing state here.
+  // TODO: skip caching for non-GET requests
+  class RingCacheFilter : public Http::StreamFilter,
+                          public Logger::Loggable<Logger::Id::filter>
+  {
+  public:
+    explicit RingCacheFilter(std::shared_ptr<std::vector<Pool>> pools) : pools_(std::move(pools)) {}
 
-          bool operator==(const CacheKey& other) const
-          {
-            return host == other.host && path == other.path;
-          }
+    // Decoder (request → upstream)
+    Http::FilterHeadersStatus   decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream) override;
+    Http::FilterDataStatus      decodeData(Buffer::Instance& data, bool end_stream) override;
+    Http::FilterTrailersStatus  decodeTrailers(Http::RequestTrailerMap& trailers) override;
+    void setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) override;
 
-          // for searching in map, wont be using map later but ring buffer TODO: remove?
-          bool operator<(const CacheKey& other) const
-          {
-            return std::tie(host, path) < std::tie(other.host, other.path);
-          }
-        };
+    // Encoder (upstream → client)
+    Http::FilterHeadersStatus    encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
+    Http::FilterDataStatus       encodeData(Buffer::Instance& data, bool end_stream) override;
+    Http::FilterTrailersStatus   encodeTrailers(Http::ResponseTrailerMap& trailers) override;
+    void setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& callbacks) override;
 
-        struct CachedResponse
-        {
-          std::string body;
-          Http::ResponseHeaderMapPtr headers;
-          Http::ResponseTrailerMapPtr trailers; // might be needed later?
-          Http::Code status;
-        };
+    // extra encoder hooks required by Envoy API
+    Http::Filter1xxHeadersStatus encode1xxHeaders(Http::ResponseHeaderMap& headers) override;
+    Http::FilterMetadataStatus   encodeMetadata(Http::MetadataMap& metadata_map) override;
 
-        struct RingBufferCache
-        {
-          // TODO: make actual ring buffer, ?move to new file?
-          std::map<CacheKey, std::unique_ptr<CachedResponse>> cache;
-        };
+    void onDestroy() override;
 
-        // Minimal pass-through HTTP filter skeleton.
-        // TODO: cache/coalescing state here.
-        // TODO: skip caching for non-GET requests
-        class RingCacheFilter : public Http::StreamFilter,
-                                public Logger::Loggable<Logger::Id::filter>
-        {
-        public:
-          RingCacheFilter(std::shared_ptr<RingBufferCache> sharedCache)
-            : sharedCache_(std::move(sharedCache)) {}
+  private:
+    // pick a pool for given path
+    Pool* pickPool(absl::string_view path) const
+    {
+      if (!pools_)
+        return nullptr;
+      for (auto& p : *pools_)
+      {
+        if (p.matches(path)) return &p;
+      }
+      return nullptr;
+    }
 
-          // Decoder (request → upstream)
-          Http::FilterHeadersStatus   decodeHeaders(Http::RequestHeaderMap& headers, bool end_stream) override;
-          Http::FilterDataStatus      decodeData(Buffer::Instance& data, bool end_stream) override;
-          Http::FilterTrailersStatus  decodeTrailers(Http::RequestTrailerMap& trailers) override;
-          void setDecoderFilterCallbacks(Http::StreamDecoderFilterCallbacks& callbacks) override;
+    std::shared_ptr<std::vector<Pool>> pools_;
+    Http::StreamDecoderFilterCallbacks* dec_cb_{nullptr};
+    Http::StreamEncoderFilterCallbacks* enc_cb_{nullptr};
 
-          // Encoder (upstream → client)
-          Http::FilterHeadersStatus    encodeHeaders(Http::ResponseHeaderMap& headers, bool end_stream) override;
-          Http::FilterDataStatus       encodeData(Buffer::Instance& data, bool end_stream) override;
-          Http::FilterTrailersStatus   encodeTrailers(Http::ResponseTrailerMap& trailers) override;
-          void setEncoderFilterCallbacks(Http::StreamEncoderFilterCallbacks& callbacks) override;
+    Pool* selected_pool_{nullptr};
+    CacheKey pending_key_;
+    std::unique_ptr<CachedResponse> pending_entry_;
+    bool should_cache_{false};
+  };
 
-          // extra encoder hooks required by current Envoy API
-          Http::Filter1xxHeadersStatus encode1xxHeaders(Http::ResponseHeaderMap& headers) override;
-          Http::FilterMetadataStatus   encodeMetadata(Http::MetadataMap& metadata_map) override;
-
-          void onDestroy() override;
-
-        private:
-          std::shared_ptr<RingBufferCache> sharedCache_;
-          CacheKey cache_key_;
-          bool should_cache_ = false;
-          std::unique_ptr<CachedResponse> pending_entry_;
-
-          Http::StreamDecoderFilterCallbacks* dec_cb_{nullptr};
-          Http::StreamEncoderFilterCallbacks* enc_cb_{nullptr};
-        };
-
-      } // namespace RingCache
-    } // namespace HttpFilters
-  } // namespace Extensions
+} // namespace RingCache
+} // namespace HttpFilters
+} // namespace Extensions
 } // namespace Envoy
