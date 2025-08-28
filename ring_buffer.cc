@@ -4,10 +4,8 @@
 
 #include "ring_buffer.h"
 
-namespace Envoy {
-namespace Extensions {
-namespace HttpFilters {
-namespace RingCache {
+namespace Envoy::Extensions::HttpFilters::RingCache
+{
 	const CachedResponse* RingBuffer::find(const CacheKey& key) const
 	{
 		if (size_ == 0 || cap_ == 0)
@@ -44,7 +42,4 @@ namespace RingCache {
 		}
 		return false;
 	}
-} // namespace RingCache
-} // namespace HttpFilters
-} // namespace Extensions
-} // namespace Envoy
+} // namespace Envoy::Extensions::HttpFilters::RingCache

@@ -10,16 +10,24 @@
 
 #include "source/common/http/utility.h"
 
-namespace Envoy {
-namespace Extensions {
-namespace HttpFilters {
-namespace RingCache {
-
+namespace Envoy::Extensions::HttpFilters::RingCache
+{
 	struct CacheKey
 	{
 		std::string host;
 		std::string path;
-		bool operator==(const CacheKey& other) const { return host == other.host && path == other.path; }
+
+		bool operator==(const CacheKey& other) const
+		{
+			return host == other.host && path == other.path;
+		}
+
+		bool operator<(const CacheKey& other) const
+		{
+			if (host < other.host) return true;
+			if (host > other.host) return false;
+			return path < other.path;
+		}
 	};
 
 	struct CachedResponse
@@ -57,21 +65,26 @@ namespace RingCache {
 		std::vector<Entry> buf_;
 	};
 
+	struct InFlight
+	{
+		std::vector<Http::StreamDecoderFilterCallbacks*> waiters;
+	};
+
 	struct Pool
 	{
-		std::string								name;
-		std::vector<std::string>	prefixes;
-		RingBuffer								buffer;
+		std::string name;
+		std::vector<std::string> prefixes;
+		RingBuffer buffer;
+
+		std::map<CacheKey, InFlight> inflight;
 
 		Pool(std::string n, std::vector<std::string> pfx, size_t slots)
-			: name(std::move(n)), prefixes(std::move(pfx)), buffer(slots) {}
+			: name(std::move(n)), prefixes(std::move(pfx)), buffer(slots)
+		{
+		}
 
 		bool matches(absl::string_view path) const;
 	};
-
-} // namespace RingCache
-} // namespace HttpFilters
-} // namespace Extensions
-} // namespace Envoy
+} // namespace Envoy::Extensions::HttpFilters::RingCache
 
 #endif //ENVOY_RING_BUFFER_FILTER_RING_BUFFER_H

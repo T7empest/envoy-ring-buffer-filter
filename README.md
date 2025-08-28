@@ -1,32 +1,32 @@
-# Envoy filter example
+# HTTP response caching, request coalescing patch for Envoy
 
-This project demonstrates the linking of additional filters with the Envoy binary.
-A new filter `echo2` is introduced, identical modulo renaming to the existing
-[`echo`](https://github.com/envoyproxy/envoy/blob/master/source/extensions/filters/network/echo/echo.h)
-filter. Integration tests demonstrating the filter's end-to-end behavior are
-also provided.
+This project is based on `envoy-filter-example` and demonstrates basic response caching
+in ring-buffers and coalescing of multiple requests heading towards origin at the same time.
 
-For an example of additional HTTP filters, see [here](http-filter-example).
-
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/envoyproxy/envoy-filter-example/badge)](https://securityscorecards.dev/viewer/?uri=github.com/envoyproxy/envoy-filter-example)
 
 ## Building
+1. `$ git clone --recurse-submodules https://github.com/T7empest/envoy-ring-buffer-filter`
+2. `$ cd envoy-ring-buffer-filter`
+3. `$ bazel build //:envoy`
 
-To build the Envoy static binary:
-
-1. `git submodule update --init`
-2. `bazel build //:envoy`
+## Configuration
+You can configure the cache in `ring_cache_server.yaml` under HTTP filters >> pools
 
 ## Testing
 
-To run the `echo2` integration test:
+To run the integration tests:
 
-`bazel test //:echo2_integration_test`
+`$ bazel test //:ring_cache_integration_test --test_output=all`
 
-To run the regular Envoy tests from this project:
+## Running
 
-`bazel test @envoy//test/...`
+Run script:
 
+`$ ./run_envoy.sh`
+
+Runtime test (sends multiple requests)
+
+`$ python3 test/send_requests.py`
 ## How it works
 
 The [Envoy repository](https://github.com/envoyproxy/envoy/) is provided as a submodule.
